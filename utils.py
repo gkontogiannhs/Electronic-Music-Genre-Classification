@@ -7,6 +7,7 @@ from sklearn.decomposition import PCA
 from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import classification_report, accuracy_score, f1_score
@@ -227,6 +228,172 @@ def get_feature_names(feature_flags, n_mfcc=13, n_tempo=193, n_chroma=12):
     return feature_names
 
 
+def extract_features_v2(
+    filepath,
+    sr=16000,
+    duration=10,
+    segment_duration=5,
+    n_fft=2048,
+    hop_length=512,
+    n_mfcc=13,
+    selected_features=None  # dictionary of feature flags
+):
+    """
+    Extracts selected audio features from a file using librosa.
+
+    Parameters:
+        filepath (str): Path to the audio file.
+        sr (int): Sampling rate.
+        duration (int): Total duration of the audio file to load (in seconds).
+        segment_duration (int): Duration of each segment (in seconds).
+        n_fft (int): FFT window size.
+        hop_length (int): Hop length for STFT-based features.
+        n_mfcc (int): Number of MFCCs to compute.
+        selected_features (dict): Dictionary specifying which features to extract.
+
+    Returns:
+        np.ndarray: 3D array (segments, time_steps, features)
+    """
+    if selected_features is None:
+        selected_features = {
+            "zcr": True,
+            "centroid": True,
+            "onset_strength": True,
+            "mfcc": True,
+            "chroma": True,
+            "spectral_bandwidth": True,
+            "spectral_rolloff": True,
+            "rms": True,
+            "spectral_contrast": True,
+            "tonnetz": True,
+            "mel_spectrogram": True,
+            "tempogram": False
+        }
+
+    try:
+        y, _ = librosa.load(filepath, sr=sr, duration=duration)
+        samples_per_segment = int(sr * segment_duration)
+        num_segments = duration // segment_duration
+        segments_feats = []
+
+        for s in range(num_segments):
+            start = s * samples_per_segment
+            end = start + samples_per_segment
+            segment = y[start:end]
+
+            if len(segment) < samples_per_segment:
+                print("Incomplete segment detected, skipping...")
+                continue
+
+            features_list = []
+
+            if selected_features.get("zcr"):
+                zcr = librosa.feature.zero_crossing_rate(segment, frame_length=n_fft, hop_length=hop_length)
+                features_list.append(zcr)
+
+            if selected_features.get("centroid"):
+                centroid = librosa.feature.spectral_centroid(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length)
+                features_list.append(centroid)
+
+            if selected_features.get("onset_strength"):
+                onset_env = librosa.onset.onset_strength(y=segment, sr=sr, hop_length=hop_length)[np.newaxis, :]
+                features_list.append(onset_env)
+
+            if selected_features.get("mfcc"):
+                mfcc = librosa.feature.mfcc(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mfcc=n_mfcc)
+                features_list.append(mfcc)
+
+            if selected_features.get("chroma"):
+                chroma = librosa.feature.chroma_stft(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length)
+                features_list.append(chroma)
+
+            if selected_features.get("spectral_bandwidth"):
+                bandwidth = librosa.feature.spectral_bandwidth(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length)
+                features_list.append(bandwidth)
+
+            if selected_features.get("spectral_rolloff"):
+                rolloff = librosa.feature.spectral_rolloff(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length)
+                features_list.append(rolloff)
+
+            if selected_features.get("rms"):
+                rms = librosa.feature.rms(y=segment, frame_length=n_fft, hop_length=hop_length)
+                features_list.append(rms)
+
+            if selected_features.get("spectral_contrast"):
+                contrast = librosa.feature.spectral_contrast(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length)
+                features_list.append(contrast)
+
+            if selected_features.get("tonnetz"):
+                y_harmonic = librosa.effects.harmonic(segment)
+                tonnetz = librosa.feature.tonnetz(y=y_harmonic, sr=sr)
+                features_list.append(tonnetz)
+
+            if selected_features.get("mel_spectrogram"):
+                mel_spec = librosa.feature.melspectrogram(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length)
+                mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+                features_list.append(mel_spec_db)
+
+            if selected_features.get("tempogram"):
+                onset_env = librosa.onset.onset_strength(y=segment, sr=sr, hop_length=hop_length)
+                tempogram = librosa.feature.fourier_tempogram(onset_envelope=onset_env, sr=sr, hop_length=hop_length)
+                min_frames = min(tempogram.shape[1], mfcc.shape[1] if selected_features.get("mfcc") else onset_env.shape[0])
+                tempogram = tempogram[:, :min_frames]
+                features_list.append(np.abs(tempogram))
+
+            min_frames = min(f.shape[1] for f in features_list)
+            features_stack = np.vstack([f[:, :min_frames] for f in features_list])
+            features_stack = features_stack.T
+            segments_feats.append(features_stack)
+
+        return np.array(segments_feats)
+
+    except Exception as e:
+        print(f"Error processing {filepath}: {e}")
+        return []
+
+
+def get_feature_names(feature_flags, n_mfcc=13, n_contrast=7, n_chroma=12, n_tempo=193, n_tonnetz=6, n_mel=128):
+    feature_names = []
+
+    if feature_flags.get("zcr"):
+        feature_names.append("ZCR")
+
+    if feature_flags.get("centroid"):
+        feature_names.append("Centroid")
+
+    if feature_flags.get("onset_strength"):
+        feature_names.append("Onset")
+
+    if feature_flags.get("mfcc"):
+        feature_names.extend([f"MFCC_{i}" for i in range(n_mfcc)])
+
+    if feature_flags.get("chroma"):
+        feature_names.extend([f"Chroma_{i}" for i in range(n_chroma)])
+
+    if feature_flags.get("spectral_bandwidth"):
+        feature_names.append("Bandwidth")
+
+    if feature_flags.get("spectral_rolloff"):
+        feature_names.append("Rolloff")
+
+    if feature_flags.get("rms"):
+        feature_names.append("RMS")
+
+    if feature_flags.get("spectral_contrast"):
+        feature_names.extend([f"Contrast_{i}" for i in range(n_contrast)])
+
+    if feature_flags.get("tonnetz"):
+        feature_names.extend([f"Tonnetz_{i}" for i in range(n_tonnetz)])
+
+    if feature_flags.get("mel_spectrogram"):
+        feature_names.extend([f"MelSpec_{i}" for i in range(n_mel)])
+
+    if feature_flags.get("tempogram"):
+        feature_names.extend([f"Tempogram_{i}" for i in range(n_tempo)])
+
+    return feature_names
+
+
 def report_pca_variance(X, threshold=0.80):
     pca = PCA()
     pca.fit(X)
@@ -236,7 +403,12 @@ def report_pca_variance(X, threshold=0.80):
     return n_components, cum_var
 
 
-def train_svm_pipelines(X, y, test_size=0.2, random_state=42):
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+def train_model_pipelines(X, y, model_type="svm", test_size=0.2, random_state=42):
     scalers = {
         "MinMax": MinMaxScaler(),
         "Standard": StandardScaler(),
@@ -250,12 +422,26 @@ def train_svm_pipelines(X, y, test_size=0.2, random_state=42):
         "pca_95var": 0.95
     }
 
-    param_grid = {
-        "svc__C": [0.1, 1, 10],
-        "svc__gamma": ['scale', 'auto']
-    }
+    if model_type == "svm":
+        model = SVC(kernel="rbf", random_state=random_state)
+        param_grid = {
+            "model__C": [0.1, 1, 10],
+            "model__gamma": ['scale', 'auto']
+        }
+    elif model_type == "rf":
+        model = RandomForestClassifier(random_state=random_state)
+        param_grid = {
+            "model__n_estimators": [100, 200],
+            "model__max_depth": [None, 10, 20]
+        }
+    else:
+        raise ValueError("Invalid model_type. Use 'svm' or 'rf'.")
 
     results = {}
+    best_f1 = -1
+    best_cm = None
+    best_labels = None
+    best_title = ""
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, stratify=y, test_size=test_size, random_state=random_state
@@ -270,7 +456,7 @@ def train_svm_pipelines(X, y, test_size=0.2, random_state=42):
 
             if pca_val is not None:
                 steps.append(("pca", PCA(n_components=pca_val)))
-            steps.append(("svc", SVC(kernel="rbf", random_state=random_state)))
+            steps.append(("model", model))
 
             pipeline = Pipeline(steps)
             grid = GridSearchCV(pipeline, param_grid, cv=5, n_jobs=-1)
@@ -278,11 +464,32 @@ def train_svm_pipelines(X, y, test_size=0.2, random_state=42):
 
             y_pred = grid.predict(X_test)
             f1 = f1_score(y_test, y_pred, average="weighted")
+            acc = grid.score(X_test, y_test)
 
-            print(f"{pca_label}: F1-score = {f1:.3f} | Best Params = {grid.best_params_}")
+            print(f"{pca_label}: F1-score = {f1:.3f} | Accuracy = {acc:.3f} | Best Params = {grid.best_params_}")
             results[scaler_name][pca_label] = {
                 "f1-score": f1,
-                "best_params": grid.best_params_
+                "accuracy": acc,
+                "best_params": grid.best_params_,
+                "report": classification_report(y_test, y_pred, target_names=np.unique(y).astype(str))
             }
+
+            # Track best
+            if f1 > best_f1:
+                best_f1 = f1
+                best_cm = confusion_matrix(y_test, y_pred)
+                best_labels = np.unique(y)
+                best_title = f"Confusion Matrix ({scaler_name} + {pca_label})"
+
+    # Plot best confusion matrix
+    if best_cm is not None:
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(best_cm, annot=True, fmt="d", cmap="Blues",
+                    xticklabels=best_labels, yticklabels=best_labels)
+        plt.xlabel("Predicted")
+        plt.ylabel("True")
+        plt.title(best_title)
+        plt.tight_layout()
+        plt.show()
 
     return results
