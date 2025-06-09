@@ -10,7 +10,9 @@ from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.metrics import classification_report, accuracy_score, f1_score
+from sklearn.metrics import classification_report, accuracy_score, f1_score, confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 def parse_audioset_csv(file_path, target_label_ids=None):
@@ -89,146 +91,6 @@ def download_tracks(df, output_dir):
 
 
 def extract_features(
-    filepath,
-    sr=16000,
-    duration=10,
-    segment_duration=5,
-    n_fft=2048,
-    hop_length=512,
-    n_mfcc=13,
-    selected_features=None  # dictionary of feature flags
-):
-    """
-    Extracts selected audio features from a file using librosa.
-
-    Parameters:
-        filepath (str): Path to the audio file.
-        sr (int): Sampling rate.
-        duration (int): Total duration of the audio file to load (in seconds).
-        segment_duration (int): Duration of each segment (in seconds).
-        n_fft (int): FFT window size.
-        hop_length (int): Hop length for STFT-based features.
-        n_mfcc (int): Number of MFCCs to compute.
-        selected_features (dict): Dictionary specifying which features to extract.
-
-    Returns:
-        np.ndarray: 3D array (segments, time_steps, features)
-    """
-    if selected_features is None:
-        selected_features = {
-            "zcr": True,
-            "centroid": True,
-            "onset_strength": True,
-            "mfcc": True,
-            "chroma": True,
-            "spectral_bandwidth": True,
-            "spectral_rolloff": True,
-            "rms": True,
-            "tempogram": False
-        }
-
-    try:
-        y, _ = librosa.load(filepath, sr=sr, duration=duration)
-        samples_per_segment = int(sr * segment_duration)
-        num_segments = duration // segment_duration
-        segments_feats = []
-
-        for s in range(num_segments):
-            start = s * samples_per_segment
-            end = start + samples_per_segment
-            segment = y[start:end]
-
-            if len(segment) < samples_per_segment:
-                print("Incomplete segment detected, skipping...")
-                continue
-
-            features_list = []
-
-            if selected_features.get("zcr"):
-                zcr = librosa.feature.zero_crossing_rate(segment, frame_length=n_fft, hop_length=hop_length)
-                features_list.append(zcr)
-
-            if selected_features.get("centroid"):
-                centroid = librosa.feature.spectral_centroid(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length)
-                features_list.append(centroid)
-
-            if selected_features.get("onset_strength"):
-                onset_env = librosa.onset.onset_strength(y=segment, sr=sr, hop_length=hop_length)[np.newaxis, :]
-                features_list.append(onset_env)
-
-            if selected_features.get("mfcc"):
-                mfcc = librosa.feature.mfcc(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mfcc=n_mfcc)
-                features_list.append(mfcc)
-
-            if selected_features.get("chroma"):
-                chroma = librosa.feature.chroma_stft(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length)
-                features_list.append(chroma)
-
-            if selected_features.get("spectral_bandwidth"):
-                bandwidth = librosa.feature.spectral_bandwidth(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length)
-                features_list.append(bandwidth)
-
-            if selected_features.get("spectral_rolloff"):
-                rolloff = librosa.feature.spectral_rolloff(y=segment, sr=sr, n_fft=n_fft, hop_length=hop_length)
-                features_list.append(rolloff)
-
-            if selected_features.get("rms"):
-                rms = librosa.feature.rms(y=segment, frame_length=n_fft, hop_length=hop_length)
-                features_list.append(rms)
-
-            if selected_features.get("tempogram"):
-                onset_env = librosa.onset.onset_strength(y=segment, sr=sr, hop_length=hop_length)
-                tempogram = librosa.feature.fourier_tempogram(onset_envelope=onset_env, sr=sr, hop_length=hop_length)
-                tempogram = tempogram[:, :min(tempogram.shape[1], mfcc.shape[1] if selected_features.get("mfcc") else onset_env.shape[0])]
-                features_list.append(np.abs(tempogram))
-
-            # Stack features along feature axis and transpose to shape (time_steps, features)
-            min_frames = min(f.shape[1] for f in features_list)
-            features_stack = np.vstack([f[:, :min_frames] for f in features_list])
-            features_stack = features_stack.T
-            segments_feats.append(features_stack)
-        
-        return np.array(segments_feats)  # shape: (num_segments, time_steps, features)
-
-    except Exception as e:
-        print(f"Error processing {filepath}: {e}")
-        return []
-    
-
-def get_feature_names(feature_flags, n_mfcc=13, n_tempo=193, n_chroma=12):
-    feature_names = []
-
-    if feature_flags.get("zcr"):
-        feature_names.append("ZCR")
-
-    if feature_flags.get("centroid"):
-        feature_names.append("Centroid")
-
-    if feature_flags.get("onset_strength"):
-        feature_names.append("Onset")
-
-    if feature_flags.get("mfcc"):
-        feature_names.extend([f"MFCC_{i}" for i in range(n_mfcc)])
-
-    if feature_flags.get("chroma"):
-        feature_names.extend([f"Chroma_{i}" for i in range(n_chroma)])
-
-    if feature_flags.get("spectral_bandwidth"):
-        feature_names.append("Bandwidth")
-
-    if feature_flags.get("spectral_rolloff"):
-        feature_names.append("Rolloff")
-
-    if feature_flags.get("rms"):
-        feature_names.append("RMS")
-
-    if feature_flags.get("tempogram"):
-        feature_names.extend([f"Tempogram_{i}" for i in range(n_tempo)])
-
-    return feature_names
-
-
-def extract_features_v2(
     filepath,
     sr=16000,
     duration=10,
@@ -345,7 +207,7 @@ def extract_features_v2(
             features_stack = features_stack.T
             segments_feats.append(features_stack)
 
-        return np.array(segments_feats)
+        return np.array(segments_feats) # frames, features
 
     except Exception as e:
         print(f"Error processing {filepath}: {e}")
@@ -402,11 +264,6 @@ def report_pca_variance(X, threshold=0.80):
     print(f"{threshold*100:.0f}% variance retained with {n_components} components.")
     return n_components, cum_var
 
-
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 def train_model_pipelines(X, y, model_type="svm", test_size=0.2, random_state=42):
     scalers = {
@@ -471,7 +328,7 @@ def train_model_pipelines(X, y, model_type="svm", test_size=0.2, random_state=42
                 "f1-score": f1,
                 "accuracy": acc,
                 "best_params": grid.best_params_,
-                "report": classification_report(y_test, y_pred, target_names=np.unique(y).astype(str))
+                "report": classification_report(y_test, y_pred, target_names=np.unique(y).astype(str), zero_division=0)
             }
 
             # Track best
